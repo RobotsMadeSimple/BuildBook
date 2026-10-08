@@ -140,7 +140,8 @@ Your build manuals live inside your Fusion designs, so updating never touches th
 
 BuildBook keeps some files of its own (logs, picture previews, your defaults) in
 `%APPDATA%\RobotsMadeSimple\BuildBook` on Windows or
-`~/Library/Application Support/RobotsMadeSimple/BuildBook` on a Mac. Uninstalling leaves them, in case you reinstall; delete that folder to remove them too.
+`~/Library/Application Support/RobotsMadeSimple/BuildBook` on a Mac. Uninstalling leaves them, in case you
+reinstall; delete that folder to remove them too.
 Your manuals stay in your designs either way.
 
 ---
