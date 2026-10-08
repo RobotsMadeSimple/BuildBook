@@ -67,6 +67,18 @@ TOOLS = [
                      "description": "These parts (default: every part with bodies, up to 300)"},
            "measure": {"type": "boolean", "description": "Measure the real gap for 'touches' (slow: ~0.1 s a pair; "
                                                          "best with a few paths). Default: bounding boxes only ('near')"}}),
+    _tool("export_stl", "Export STL files for 3D printing: one per distinct component (repeats are counted, not "
+          "exported twice), in the component's own coordinates. Bodies of split components and the root's own "
+          "bodies are exported one file each. Returns the files written and how many of each the design uses.",
+          {"paths": {"type": "array", "items": {"type": "string"},
+                     "description": "Only these parts (from list_parts; default: every component with bodies)"},
+           "filter": {"type": "string", "description": "Only parts whose names / paths contain this"},
+           "folder": {"type": "string", "description": "Where to write (default: BuildBook's data folder, "
+                                                       "stl/<design name>)"},
+           "one_file_per_body": {"type": "boolean", "description": "Split multi-body components into a file per "
+                                                                   "body (default false)"},
+           "refinement": {"type": "string", "enum": ["low", "medium", "high"], "description": "Mesh detail "
+                                                                                              "(default high)"}}),
     _tool("backup_manual", "Save a copy of the whole build manual (a JSON file in BuildBook's data folder), "
           "e.g. before making big changes.", {"label": {"type": "string", "description": "A short note for it"}}),
     _tool("list_backups", "The saved copies of this design's build manual, newest first."),
@@ -695,6 +707,83 @@ def _get_part_info(ctrl, args):
                   "touching": "measured gaps (within 0.5 mm)" if exact else
                   "bounding boxes overlap (near, not necessarily touching: pass measure with fewer paths)",
                   "parts": out, "joints": joints})
+
+
+# ---------------------------------------------------------------- STL export
+
+def _export_stl(ctrl, args):
+    import adsk.fusion
+    from . import paths as paths_mod
+    design = ctrl.design()
+    root = design.rootComponent
+    index = refs.path_index(design)
+    if args.get("paths"):
+        _known_paths(ctrl, args["paths"])
+        chosen = [index[p] for p in args["paths"]]
+    else:
+        chosen = [index[p] for p in index]
+    text = (args.get("filter") or "").lower()
+    if text:
+        chosen = [part for part in chosen if text in (part.fullPathName + " " + part.name).lower()]
+
+    # What to export: components once each (counting their uses), single bodies on their own.
+    jobs = {}                                   # key -> {"geometry", "name", "qty"}
+    for part in chosen:
+        if isinstance(part, refs.BodyPart):
+            key, geometry, name = part.fullPathName, part.body, part.component.name + " - " + part.body.name
+        elif refs.is_split(part):
+            continue                            # (its bodies come as BodyParts)
+        else:
+            comp = part.component
+            if not comp.bRepBodies.count:
+                continue                        # (an assembly: its parts come on their own)
+            if comp.occurrences.count:          # (exporting it would bring its sub-parts along)
+                for body in comp.bRepBodies:
+                    job = jobs.setdefault(comp.id + "|" + body.name,
+                                          {"geometry": body, "name": comp.name + " - " + body.name, "qty": 0})
+                    job["qty"] += 1
+                continue
+            key, geometry, name = comp.id, comp, comp.name
+        job = jobs.setdefault(key, {"geometry": geometry, "name": name, "qty": 0})
+        job["qty"] += 1
+    if not args.get("paths") and not text:
+        for body in root.bRepBodies:
+            jobs["root|" + body.name] = {"geometry": body, "name": body.name, "qty": 1}
+    if not jobs:
+        return _fail("Nothing with bodies to export (see list_parts).")
+
+    folder = args.get("folder") or paths_mod.data_dir(
+        "stl", model.safe_filename(ctrl.app.activeDocument.name)[:80] or "design")
+    os.makedirs(folder, exist_ok=True)
+    refine = adsk.fusion.MeshRefinementSettings
+    refinement = {"low": refine.MeshRefinementLow, "medium": refine.MeshRefinementMedium,
+                  "high": refine.MeshRefinementHigh}[args.get("refinement") or "high"]
+    exporter = design.exportManager
+    used, written, failed = set(), [], []
+    for job in jobs.values():
+        stem = model.safe_filename(job["name"])[:100] or "part"
+        name, n = stem, 2
+        while name.lower() in used:
+            name, n = "{} ({})".format(stem, n), n + 1
+        used.add(name.lower())
+        path = os.path.join(folder, name + ".stl")
+        try:
+            options = exporter.createSTLExportOptions(job["geometry"], path)
+            options.isBinaryFormat = True
+            options.meshRefinement = refinement
+            options.sendToPrintUtility = False
+            if args.get("one_file_per_body") and isinstance(job["geometry"], adsk.fusion.Component):
+                options.isOneFilePerBody = True
+            if not exporter.execute(options):
+                raise RuntimeError("Fusion said no")
+            written.append({"file": os.path.basename(path), "qty": job["qty"]})
+        except Exception as e:
+            failed.append({"name": job["name"], "error": str(e)})
+    log.info("export_stl: {} files to {} ({} failed)".format(len(written), folder, len(failed)))
+    result = {"folder": folder, "units": _units(ctrl)[1], "files": written}
+    if failed:
+        result["failed"] = failed
+    return _text(result)
 
 
 # ---------------------------------------------------------------- backups
