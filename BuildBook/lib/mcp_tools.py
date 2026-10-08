@@ -728,6 +728,9 @@ def _export_stl(ctrl, args):
 
     # What to export: components once each (counting their uses), single bodies on their own.
     jobs = {}                                   # key -> {"geometry", "name", "qty"}
+    if args.get("paths"):                       # (a split component asked for by name: its bodies)
+        chosen = [p for part in chosen for p in
+                  ([refs.BodyPart(part, b) for b in part.bRepBodies] if refs.is_split(part) else [part])]
     for part in chosen:
         if isinstance(part, refs.BodyPart):
             key, geometry, name = part.fullPathName, part.body, part.component.name + " - " + part.body.name
@@ -739,11 +742,11 @@ def _export_stl(ctrl, args):
                 continue                        # (an assembly: its parts come on their own)
             if comp.occurrences.count:          # (exporting it would bring its sub-parts along)
                 for body in comp.bRepBodies:
-                    job = jobs.setdefault(comp.id + "|" + body.name,
+                    job = jobs.setdefault(comp.id + "|" + comp.name + "|" + body.name,
                                           {"geometry": body, "name": comp.name + " - " + body.name, "qty": 0})
                     job["qty"] += 1
                 continue
-            key, geometry, name = comp.id, comp, comp.name
+            key, geometry, name = comp.id + "|" + comp.name, comp, comp.name    # (library parts share an id)
         job = jobs.setdefault(key, {"geometry": geometry, "name": name, "qty": 0})
         job["qty"] += 1
     if not args.get("paths") and not text:
