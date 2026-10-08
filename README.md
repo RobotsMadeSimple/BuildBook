@@ -45,23 +45,51 @@ over it.
 - **Annotations**: arrows, lines, boxes, ellipses, text (with leader arrows that stay
   put while you move the text) and numbered callouts, drawn in a separate editor
   window and onto exported pictures.
+- **Animation and video**: play the book, a section or a step forward (parts fly in) or in
+  reverse; record MP4 videos with FFmpeg (or frames), per step too.
+- **Exploded view**: one picture of the whole assembly using every step's moves, with its
+  own extra moves.
+- **Parameters**: explode distances can be Fusion user parameters or expressions.
+- **Staying correct**: when the design changes, BuildBook flags stale pictures and new parts.
+- **Agent access (MCP)**: optional, see [Privacy](#privacy).
 - **PDF manual**: a cover with a picture of the whole assembly and contents, each
   section's page with its own picture and parts list, every step (number, name,
   notes, picture, parts) and the full parts list, with hardware listed separately.
 
 ## Install
 
-- **Installer**: see the [repository README](../README.md) for the one-line install
-  on Windows and Mac.
-- **By hand**: copy this folder, then in Fusion **Utilities → Scripts and Add-Ins →
-  Add-Ins → +**, choose the `BuildBook` folder and **Run**.
+**Step-by-step guide (no Git or PowerShell needed): [INSTALL.md](INSTALL.md).**
+
+- **Windows:** download **`BuildBook-Setup-<version>.exe`** from the
+  [latest release](https://github.com/RobotsMadeSimple/BuildBook/releases/latest), run it and
+  restart Fusion. It installs for your account only (no admin rights).
+- **Mac (or Windows by hand):** download **`BuildBook.zip`** from the same page and unzip it into
+  Fusion's add-ins folder (see the guide).
+- **With Git**, to follow the latest changes:
+
+  ```powershell
+  irm https://raw.githubusercontent.com/RobotsMadeSimple/BuildBook/main/install/install.ps1 | iex
+  ```
+
+  ```bash
+  bash <(curl -fsSL https://raw.githubusercontent.com/RobotsMadeSimple/BuildBook/main/install/install.sh)
+  ```
+
+  This clones the repository to `~/BuildBook` and links the add-in into Fusion. Run it again
+  to update.
 
 ## Privacy
 
 BuildBook works entirely on your computer. It sends nothing anywhere: no accounts,
-no analytics, no network access. The manual is stored inside your design.
+no analytics. The manual is stored inside your design.
+
+The one exception is opt-in: **Agent access (MCP)** in Settings (off by default) lets an AI
+agent such as Claude Code on the same computer read and, if allowed, edit the manual. It
+listens only on this computer (127.0.0.1), at an address with a private token.
 
 ## Layout
+
+The add-in is the `BuildBook/` folder (copied into Fusion as is):
 
 ```
 BuildBook.py              entry point + controller (panel actions, document events)
@@ -90,11 +118,12 @@ tests/                    offline tests for the pure-Python modules
 The pure-Python modules run without Fusion:
 
 ```
-python tests/test_core.py
-python tests/test_crop.py
-python tests/test_hardware.py
-python tests/test_pdf.py [sample.pdf]
+python -m unittest discover -s BuildBook/tests
 ```
+
+GitHub Actions runs them on every push, and builds `BuildBook.zip` plus the Windows installer
+([`install/BuildBook.iss`](install/BuildBook.iss), Inno Setup) for every version tag:
+`git tag v1.1 && git push origin v1.1`.
 
 ## Runtime files
 
@@ -111,3 +140,7 @@ Deleting the folder is safe (thumbnails can be taken again from Settings).
 
 `python BuildBook/tools/make_icons.py` (needs Pillow) draws the toolbar and dialog icons in
 `resources/`.
+
+## License
+
+[MIT](LICENSE)
