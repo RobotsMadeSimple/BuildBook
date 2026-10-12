@@ -1,5 +1,7 @@
-# Tests on every push; a release (BuildBook.zip + the Windows installer) for every version tag.
-# Push a version tag (git tag v1.0 && git push origin v1.0), or run it by hand from the Actions tab.
+# Tests on every push and PR; every merge to main makes a release (BuildBook.zip + the Windows installer).
+# The version is picked automatically from the commit messages since the last tag, like the other RMS repos:
+#   "!" before the first ":"  -> major     🚀 feat -> minor     anything else -> patch
+# The first release (no tags yet) is v1.0.0. A hand-pushed v* tag, or a run from the Actions tab, also works.
 name: Release
 
 on:
@@ -10,11 +12,16 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to create (e.g. v1.0)"
+        description: "Release tag to create (e.g. v1.0.0)"
         required: true
 
 permissions:
   contents: write
+
+# Two quick merges must not race for the same version number.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   tests:
@@ -27,12 +34,58 @@ jobs:
       - name: Offline tests (the pure-Python modules)
         run: python -m unittest discover -s BuildBook/tests -v
 
-  zip:
+  version:
     needs: tests
-    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.pick.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Pick the version
+        id: pick
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            echo "tag=$INPUT_TAG" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          LAST=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+          if [ -z "$LAST" ]; then
+            echo "tag=v1.0.0" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          BUMP=patch
+          while IFS= read -r MSG; do
+            if echo "$MSG" | cut -d: -f1 | grep -qF '!'; then BUMP=major; break
+            elif echo "$MSG" | grep -qF '🚀'; then BUMP=minor; fi
+          done <<< "$(git log "$LAST"..HEAD --format=%s)"
+          IFS=. read -r MA MI PA <<< "${LAST#v}"
+          case $BUMP in
+            major) NEW="v$((MA + 1)).0.0" ;;
+            minor) NEW="v$MA.$((MI + 1)).0" ;;
+            *)     NEW="v$MA.$MI.$((PA + 1))" ;;
+          esac
+          echo "$LAST -> $NEW ($BUMP)"
+          echo "tag=$NEW" >> "$GITHUB_OUTPUT"
+
+  zip:
+    needs: version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Stamp the version into the manifest
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          sed -i -E "s/(\"version\": *\")[^\"]*\"/\1${TAG#v}\"/" BuildBook/BuildBook.manifest
+          grep '"version"' BuildBook/BuildBook.manifest
 
       - name: Build BuildBook.zip
         run: |
@@ -45,15 +98,15 @@ jobs:
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          TAG: ${{ needs.version.outputs.tag }}
         run: |
           gh release create "$TAG" dist/* --title "BuildBook $TAG" --generate-notes --target "$GITHUB_SHA"
 
   # The Windows installer (.exe): Inno Setup, installs for the current user without admin rights.
-  # Built on pushes to main too (kept with the run), so a broken installer shows up before a release.
+  # PRs build it too (kept with the run, not released), so a broken installer shows up before merging.
   installer:
-    needs: [tests, zip]
-    if: always() && needs.tests.result == 'success' && github.event_name != 'pull_request' && (needs.zip.result == 'success' || needs.zip.result == 'skipped')
+    needs: [tests, version, zip]
+    if: always() && needs.tests.result == 'success' && needs.version.result != 'failure' && needs.zip.result != 'failure'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -66,8 +119,12 @@ jobs:
       - name: Build the installer
         shell: pwsh
         run: |
-          $tag = "${{ github.event.inputs.tag || github.ref_name }}"
+          $tag = "${{ needs.version.outputs.tag }}"
           $version = if ($tag -like "v*") { $tag.Substring(1) } else { "test" }
+          if ($tag) {
+            $m = "BuildBook\BuildBook.manifest"
+            (Get-Content $m -Raw) -replace '("version":\s*")[^"]*"', "`${1}$version`"" | Set-Content $m -NoNewline
+          }
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" install\BuildBook.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Get-ChildItem dist
@@ -84,5 +141,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "${{ github.event.inputs.tag || github.ref_name }}"
-          gh release upload $tag (Get-ChildItem dist\*.exe).FullName --clobber
+          $tag = "${{ needs.version.outputs.tag }}"
+          # Plus a fixed-name copy, so .../releases/latest/download/BuildBook-Setup.exe always gets the newest
+          # (the website's download button links there).
+          $exe = Get-ChildItem dist\BuildBook-Setup-*.exe | Select-Object -First 1
+          Copy-Item $exe.FullName dist\BuildBook-Setup.exe
+          gh release upload $tag $exe.FullName dist\BuildBook-Setup.exe --clobber
